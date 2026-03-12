@@ -1,10 +1,9 @@
 import * as core from '@actions/core'
 import semver from 'semver'
-import * as matcher from 'matcher'
 import * as github from '@actions/github'
 import { Context } from '@actions/github/lib/context'
 
-const releaseTypeOrder = [
+const RELEASE_TYPES = [
   'major',
   'premajor',
   'minor',
@@ -12,9 +11,13 @@ const releaseTypeOrder = [
   'patch',
   'prepatch',
   'prerelease'
-]
+] as const
 
-const defaultConfig = {
+type ReleaseTypeKey = (typeof RELEASE_TYPES)[number]
+
+const releaseTypeOrder: ReadonlyArray<ReleaseTypeKey> = RELEASE_TYPES
+
+const defaultConfig: Record<ReleaseTypeKey, ReadonlyArray<ReleaseTypeKey>> = {
   major: ['major'],
   premajor: ['premajor'],
   minor: ['minor'],
@@ -22,6 +25,39 @@ const defaultConfig = {
   patch: ['patch'],
   prepatch: ['prepatch'],
   prerelease: ['prerelease']
+} as const
+
+const FALLBACK_RELEASE_TYPE: ReleaseTypeKey = 'patch'
+
+function getMatchedReleaseTypes(message: string): ReleaseTypeKey[] {
+  const matchedReleaseTypes: ReleaseTypeKey[] = []
+  const tagsInMessage = new Set(
+    (message.toLowerCase().match(/#[a-z]+/g) || []).map(tag =>
+      tag.replace(/^#/, '')
+    )
+  )
+
+  for (const releaseType of RELEASE_TYPES) {
+    const aliases = defaultConfig[releaseType]
+    if (aliases.some(alias => tagsInMessage.has(alias))) {
+      matchedReleaseTypes.push(releaseType)
+    }
+  }
+
+  return matchedReleaseTypes
+}
+
+function normalizeReleaseType(releaseType: string): ReleaseTypeKey {
+  const normalizedReleaseType = releaseType.toLowerCase() as ReleaseTypeKey
+
+  if (RELEASE_TYPES.includes(normalizedReleaseType)) {
+    return normalizedReleaseType
+  }
+
+  core.warning(
+    `Invalid releaseType '${releaseType}' provided. Falling back to '${FALLBACK_RELEASE_TYPE}'.`
+  )
+  return FALLBACK_RELEASE_TYPE
 }
 
 export function increment(
@@ -32,21 +68,16 @@ export function increment(
   incrementPerCommit: boolean
 ): semver.SemVer {
   const version = semver.parse(versionNumber) || new semver.SemVer('0.0.0')
+  const normalizedDefaultReleaseType = normalizeReleaseType(defaultReleaseType)
   core.debug(`Config used => ${JSON.stringify(defaultConfig)}`)
-  let matchedLabels = new Array<string>()
+  let matchedLabels: string[] = []
 
   for (const message of commitMessages) {
-    let msgMatch = false
-    for (const [key, value] of Object.entries(defaultConfig)) {
-      for (const releaseType of value) {
-        if (matcher.isMatch(message, `*#${releaseType}*`)) {
-          matchedLabels.push(key)
-          msgMatch = true
-        }
-      }
-    }
-    if (incrementPerCommit && !msgMatch) {
-      matchedLabels.push(defaultReleaseType)
+    const matchedReleaseTypes = getMatchedReleaseTypes(message)
+    matchedLabels.push(...matchedReleaseTypes)
+
+    if (incrementPerCommit && matchedReleaseTypes.length === 0) {
+      matchedLabels.push(normalizedDefaultReleaseType)
     }
   }
 
@@ -57,7 +88,7 @@ export function increment(
   )
 
   if (matchedLabels.length === 0) {
-    matchedLabels.push(defaultReleaseType)
+    matchedLabels.push(normalizedDefaultReleaseType)
   }
 
   //find highest release type and singularize
